@@ -1,0 +1,1 @@
+print('Mitya Fomin')
