@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>The Second One — прототип</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #2F2A26; overflow: hidden; }
+      #app { width: 100vw; height: 100vh; }
+      /* Подсказка повернуть телефон в ландшафт */
+      #rotate { display: none; position: fixed; inset: 0; background: #2F2A26; color: #F1EBE0;
+        font-family: system-ui, sans-serif; align-items: center; justify-content: center; text-align: center; z-index: 10; }
+      @media (orientation: portrait) and (max-width: 900px) { #rotate { display: flex; } #app { display: none; } }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="rotate">Поверните телефон горизонтально</div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
