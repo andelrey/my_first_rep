@@ -46,7 +46,7 @@ export class GameScene extends Phaser.Scene {
     const gridGap = 52;
     const nCars = C.botCount + 2; // + чемпион + игрок
     // grid 1 (чемпион, впереди) ... grid nCars
-    this.champion = this._makeCar('Чемпион', C.colors.leader, { isChampion: true });
+    this.champion = this._makeCar('Чемпион', C.colors.champion, { isChampion: true });
     this.champion.dist = (nCars - 1) * gridGap;
     this.champion.lane = -20;
 
@@ -64,6 +64,16 @@ export class GameScene extends Phaser.Scene {
     }
 
     for (const car of this.cars) car.speed = C.baseSpeed;
+
+    // Следы шин от дрифта (под машинами)
+    this.skids = this.add.graphics().setDepth(5);
+    // Прожектор лидера: едет за тем, кто сейчас первый (не привязан к чемпиону)
+    const sp = C.spotlight;
+    this.spot = this.add.circle(0, 0, sp.radius, C.colors.leader, sp.alpha).setDepth(9);
+    this.spotTag = this.add.text(0, 0, '#1',
+      { fontFamily: 'system-ui, sans-serif', fontSize: '16px', color: '#D9A53A', fontStyle: 'bold', stroke: '#2F2A26', strokeThickness: 3 })
+      .setOrigin(0.5).setDepth(13);
+    this.prevLeader = null;
 
     // --- Камера ---
     const wb = this.worldBounds;
@@ -108,12 +118,12 @@ export class GameScene extends Phaser.Scene {
       const arrow = this.add.triangle(0, -30, 0, 10, 8, -6, -8, -6, C.colors.playerMarker);
       cont.add([marker, arrow]);
     }
-    if (flags.isChampion) {
-      const crown = this.add.text(0, -26, '#1', { fontFamily: 'system-ui', fontSize: '16px', color: '#D9A53A', fontStyle: 'bold' }).setOrigin(0.5);
-      cont.add(crown);
-    }
     cont.setDepth(10);
-    const car = { name, color, container: cont, body, dist: 0, speed: 0, lane: 0, prefLane: 0, paceBase: 1, finished: false, ...flags };
+    // Имя соперника над машиной (не вращается вместе с ней)
+    const label = flags.isPlayer ? null : this.add.text(0, 0, name,
+      { fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#F1EBE0', stroke: '#2F2A26', strokeThickness: 3 })
+      .setOrigin(0.5).setDepth(12);
+    const car = { name, color, container: cont, body, label, dist: 0, speed: 0, lane: 0, prefLane: 0, paceBase: 1, driftAngle: 0, finished: false, ...flags };
     this.cars.push(car);
     return car;
   }
@@ -169,7 +179,9 @@ export class GameScene extends Phaser.Scene {
     this.curve.getTangent(t, this._t);
     const nx = -this._t.y, ny = this._t.x;
     car.container.setPosition(this._p.x + nx * car.lane, this._p.y + ny * car.lane);
-    car.container.setRotation(Math.atan2(this._t.y, this._t.x));
+    car.heading = Math.atan2(this._t.y, this._t.x);
+    car.container.setRotation(car.heading + car.driftAngle);
+    if (car.label) car.label.setPosition(car.container.x, car.container.y - 30);
     car.t = t;
   }
 
@@ -185,13 +197,22 @@ export class GameScene extends Phaser.Scene {
     const maxS = C.maxSpeed * (leading ? C.leaderHeaviness.maxSpeed : 1);
     const acc = C.accel * (leading ? C.leaderHeaviness.accel : 1);
     const p = this.player;
-    if (this.driftDown) {
-      p.speed = Math.max(40, p.speed - C.driftScrub * dt);
-    } else if (this.gasDown || this.keys.UP.isDown || this.keys.W.isDown || this.keys.SPACE.isDown) {
+    const gas = this.gasDown || this.keys.UP.isDown || this.keys.W.isDown || this.keys.SPACE.isDown;
+    const drift = this.driftDown || this.keys.SHIFT.isDown;
+    let driftTarget = 0;
+    if (drift) {
+      // Мягкий (с газом): только теряем долю скорости. Резкий (без газа): плюс обычное торможение.
+      p.speed -= p.speed * (gas ? C.driftSoftLoss : C.driftHardLoss) * dt;
+      if (!gas) p.speed -= C.brake * dt;
+      p.speed = Math.max(0, p.speed);
+      driftTarget = Phaser.Math.DegToRad(gas ? C.driftSoftAngleDeg : C.driftHardAngleDeg) * this._turnSign(p);
+    } else if (gas) {
       p.speed = Math.min(maxS, p.speed + acc * dt);
     } else {
       p.speed = Math.max(0, p.speed - C.brake * dt);
     }
+    p.driftAngle += (driftTarget - p.driftAngle) * Math.min(1, C.driftAngleEase * dt);
+    if (drift && p.speed > 20) this._skid(p);
     // Руль: клавиши или наклон
     let steer = 0;
     if (this.keys.LEFT.isDown || this.keys.A.isDown) steer = -1;
@@ -255,6 +276,7 @@ export class GameScene extends Phaser.Scene {
 
     // --- HUD ---
     this._updateHud(order, playerRank);
+    this._updateSpotlight(order[0]);
 
     // --- Зум финиша (перк-заглушка): отъезжаем в финишной зоне ---
     this.targetZoom = p.t > C.finishZoneFrom ? 0.8 : 1.0;
@@ -268,6 +290,43 @@ export class GameScene extends Phaser.Scene {
     if (p.finished || rivalsDone >= 2) this._finish(order, playerRank);
   }
 
+  // Куда поворачивает трасса под машиной: +1 / -1 (на прямой — куда рулят)
+  _turnSign(car) {
+    const t = car.t ?? 0;
+    const a = this.curve.getTangent(Math.min(1, t), new Phaser.Math.Vector2());
+    const b = this.curve.getTangent(Math.min(1, t + 0.01), new Phaser.Math.Vector2());
+    const cross = a.x * b.y - a.y * b.x;
+    if (Math.abs(cross) > 0.002) car.turnSign = Math.sign(cross);
+    return car.turnSign || 1;
+  }
+
+  // Две точки следа от задних колёс
+  _skid(car) {
+    const ang = car.heading + car.driftAngle;
+    const cx = car.container.x - Math.cos(ang) * 16, cy = car.container.y - Math.sin(ang) * 16;
+    const ox = -Math.sin(ang) * 9, oy = Math.cos(ang) * 9;
+    this.skids.fillStyle(C.colors.dark, 0.35);
+    this.skids.fillCircle(cx + ox, cy + oy, 2.5);
+    this.skids.fillCircle(cx - ox, cy - oy, 2.5);
+  }
+
+  // Прожектор — над текущим лидером; на смене лидера — вспышка
+  _updateSpotlight(leader) {
+    const x = leader.container.x, y = leader.container.y;
+    this.spot.setPosition(x, y);
+    this.spotTag.setPosition(x, y - (leader.label ? 46 : 36));
+    if (leader !== this.prevLeader) {
+      this.prevLeader = leader;
+      this.tweens.killTweensOf(this.spot);
+      this.spot.setScale(1.8);
+      this.tweens.add({ targets: this.spot, scale: 1, duration: 350, ease: 'Quad.easeOut' });
+    }
+    // Игрок под прожектором — пульсирует: «вторая звезда под угрозой»
+    const sp = C.spotlight;
+    const a = leader.isPlayer ? sp.alpha * (0.6 + 0.4 * Math.sin(this.raceTime * sp.playerPulseHz * Math.PI * 2)) + 0.15 : sp.alpha;
+    this.spot.setAlpha(a);
+  }
+
   // Финишировавшие — в порядке пересечения черты, остальные — по прогрессу
   _ranking() {
     const running = this.cars.filter((c) => !c.finished).sort((a, b) => b.dist - a.dist);
@@ -276,7 +335,8 @@ export class GameScene extends Phaser.Scene {
 
   _updateHud(order, playerRank) {
     const p = this.player;
-    this.hudPos.setText(`${playerRank}/${this.cars.length}`);
+    const lead = order[0];
+    this.hudPos.setText(`${playerRank}/${this.cars.length}` + (lead.isPlayer ? '' : `  · лидер: ${lead.name}`));
     const idx = order.indexOf(p);
     const ahead = order[idx - 1];
     const behind = order[idx + 1];
