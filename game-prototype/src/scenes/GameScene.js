@@ -100,7 +100,7 @@ export class GameScene extends Phaser.Scene {
     this.hudPos = this.add.text(16, 12, '', { fontFamily: 'system-ui, sans-serif', fontSize: '34px', color: '#F1EBE0', fontStyle: 'bold' }).setScrollFactor(0).setDepth(100);
     this.hudLeader = this.add.text(16, 58, '', { fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#F1EBE0' }).setScrollFactor(0).setDepth(100);
     this.hudThird = this.add.text(16, 84, '', { fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#F1EBE0' }).setScrollFactor(0).setDepth(100);
-    this.hudHint = this.add.text(16, 118, 'Газ — правая кнопка / ↑ · Руль — наклон / ← → · Встань в хвост машине впереди — поток тянет',
+    this.hudHint = this.add.text(16, 118, 'Газ — правая кнопка / ↑ · Руль — наклон / ← →' + (C.driftEnabled ? ' · Дрифт — левая / Shift' : '') + ' · Встань в хвост машине впереди — поток тянет',
       { fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#C7CBD1' }).setScrollFactor(0).setDepth(100);
 
     // Состояние
