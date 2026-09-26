@@ -501,6 +501,10 @@ export class GameScene extends Phaser.Scene {
         const dl = back.lane - front.lane;
         if (Math.abs(dl) >= cc.carWidthPx) continue;
         if (dd >= L * 0.5) {
+          // Игрок сзади и быстрее — его собственный разгон (обычно в потоке) проносит мимо:
+          // бампер лидера не «отбойник». Не хочешь стать первым — дрифтом из потока или сброс газа.
+          // Удар сзади от бота по-прежнему только тормозит (игрок тогда — front).
+          if (back === this.player && back.speed > front.speed) continue;
           back.dist = front.dist - L;
           if (back.speed > front.speed) {
             back.speed = front.speed * (1 - cc.bumpLoss);

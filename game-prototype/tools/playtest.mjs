@@ -3,7 +3,7 @@
 //
 // Запуск (dev-сервер должен работать: npm run dev):
 //   node tools/playtest.mjs <стратегия> [гонок=3] [url=http://localhost:5173]
-// Стратегии: gas (всё время газ), none (ничего не жать), skill (держит полоску у бампера лидера:
+// Стратегии: gas (всё время газ), tail (газ в полосе впереди идущего, сброс только перед поворотом), none (ничего не жать), skill (держит полоску у бампера лидера:
 // газ, вбок из потока, мягкий дрифт вплотную, сброс перед поворотом).
 // Нужен playwright: локально `npm i -D playwright && npx playwright install chromium`,
 // либо путь к установленному пакету в PLAYWRIGHT_PATH (…/node_modules/playwright).
@@ -69,6 +69,13 @@ for (let r = 0; r < runs; r++) {
     if (st.rank === 2) { gapsL.push(st.gl); gaps3.push(st.g3); }
 
     if (strat === 'gas') await kb.down('ArrowUp');
+    if (strat === 'tail') {
+      // «Тупо газ за лидером»: в полосе впереди идущего, газ зажат (кроме точки торможения)
+      if (st.brakeNow) hold = true;
+      if (st.inCorner) hold = false;
+      await steer(st.ah ? st.ah.dl : 0);
+      if (hold) await kb.up('ArrowUp'); else await kb.down('ArrowUp');
+    }
     if (strat === 'skill') {
       // Держит полоску у бампера лидера: газ зажат; ближе 1 корп. — вбок из потока,
       // вплотную — мягкий дрифт; снизу — в хвост и обгон вбок; перед поворотом — сброс до лимита
