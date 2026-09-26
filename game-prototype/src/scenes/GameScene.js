@@ -31,6 +31,20 @@ export class GameScene extends Phaser.Scene {
     const g = this.add.graphics();
     g.lineStyle(level.trackWidthPx, C.colors.asphalt, 1);
     this.curve.draw(g, 96);
+    // Повороты (красные зоны) — подсвечены на асфальте, чуть заранее: тут надо сбросить
+    if (C.corners.enabled) {
+      for (const z of level.zones) {
+        if (z.type !== 'red') continue;
+        const from = Math.max(0, z.from - C.corners.lookahead), to = z.to, n = 40;
+        g.lineStyle(level.trackWidthPx, C.colors.corner, 0.16);
+        g.beginPath();
+        for (let i = 0; i <= n; i++) {
+          this.curve.getPoint(from + ((to - from) * i) / n, this._p);
+          if (i === 0) g.moveTo(this._p.x, this._p.y); else g.lineTo(this._p.x, this._p.y);
+        }
+        g.strokePath();
+      }
+    }
     // центральная линия
     g.lineStyle(4, C.colors.light, 0.5);
     this.curve.draw(g, 96);
@@ -56,10 +70,12 @@ export class GameScene extends Phaser.Scene {
 
     const botNames = ['Свен', 'Бьёрн', 'Сигрид'];
     for (let i = 0; i < C.botCount; i++) {
-      const b = this._makeCar(botNames[i] || `Бот ${i + 1}`, C.colors.bot, { isBot: true });
+      // Первый бот в решётке (сразу за игроком) — хвостист
+      const isTailer = C.tailer.enabled && i === 0;
+      const b = this._makeCar(botNames[i] || `Бот ${i + 1}`, isTailer ? C.colors.tailer : C.colors.bot, { isBot: true, isTailer });
       b.dist = (nCars - 3 - i) * gridGap;
       b.lane = (i % 2 === 0 ? -30 : 30);
-      b.paceBase = C.botPace + Phaser.Math.FloatBetween(-C.botPaceSpread, C.botPaceSpread);
+      b.paceBase = isTailer ? C.tailer.pace : C.botPace + Phaser.Math.FloatBetween(-C.botPaceSpread, C.botPaceSpread);
       b.prefLane = Phaser.Math.Between(-40, 40);
     }
 
@@ -103,6 +119,9 @@ export class GameScene extends Phaser.Scene {
     this.hudHint = this.add.text(16, 118, 'Газ — правая кнопка / ↑ · Руль — наклон / ← →' + (C.driftEnabled ? ' · Дрифт — левая / Shift' : '') + ' · Встань в хвост машине впереди — поток тянет',
       { fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#C7CBD1' }).setScrollFactor(0).setDepth(100);
 
+    this.skidText = this.add.text(0, 0, 'ЗАНОС', { fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#FF3B2F', fontStyle: 'bold', stroke: '#2F2A26', strokeThickness: 3 })
+      .setOrigin(0.5).setDepth(13).setVisible(false);
+
     // Состояние
     this.finishOrder = []; // машины в порядке пересечения финиша
     this.raceTime = 0;
@@ -114,7 +133,9 @@ export class GameScene extends Phaser.Scene {
     const cont = this.add.container(0, 0);
     const body = this.add.rectangle(0, 0, 40, 22, color).setStrokeStyle(2, C.colors.dark);
     const nose = this.add.rectangle(15, 0, 10, 22, C.colors.dark);
-    cont.add([body, nose]);
+    const brakeL = this.add.rectangle(-19, -7, 4, 6, 0xFF3B2F).setVisible(false);
+    const brakeR = this.add.rectangle(-19, 7, 4, 6, 0xFF3B2F).setVisible(false);
+    cont.add([body, nose, brakeL, brakeR]);
     if (flags.isPlayer) {
       const marker = this.add.rectangle(0, 0, 52, 34).setStrokeStyle(4, C.colors.playerMarker);
       const arrow = this.add.triangle(0, -30, 0, 10, 8, -6, -8, -6, C.colors.playerMarker);
@@ -125,7 +146,7 @@ export class GameScene extends Phaser.Scene {
     const label = flags.isPlayer ? null : this.add.text(0, 0, name,
       { fontFamily: 'system-ui, sans-serif', fontSize: '13px', color: '#F1EBE0', stroke: '#2F2A26', strokeThickness: 3 })
       .setOrigin(0.5).setDepth(12);
-    const car = { name, color, container: cont, body, label, dist: 0, speed: 0, lane: 0, prefLane: 0, paceBase: 1, driftAngle: 0, finished: false, ...flags };
+    const car = { name, color, container: cont, body, label, brakeLights: [brakeL, brakeR], brakeHold: 0, dist: 0, speed: 0, lane: 0, prefLane: 0, paceBase: 1, driftAngle: 0, finished: false, ...flags };
     this.cars.push(car);
     return car;
   }
@@ -197,18 +218,25 @@ export class GameScene extends Phaser.Scene {
     // Ранги (по прогрессу) — до движения, для тяжести лидерства в этом кадре
     const leader = this._ranking()[0];
 
+    const p = this.player;
+    const gas = this.gasDown || this.keys.UP.isDown || this.keys.W.isDown || this.keys.SPACE.isDown;
+    const drift = C.driftEnabled && (this.driftDown || this.keys.SHIFT.isDown);
+    p.drifting = drift;
+
     // Кто у кого в хвосте — до движения, по положению на начало кадра
     this._updateDrafting();
 
     // --- Игрок ---
     const leading = leader === this.player;
-    const p = this.player;
-    const maxS = C.maxSpeed * (leading ? C.leaderHeaviness.maxSpeed : 1) * (p.drafting ? 1 + C.slipstream.boost : 1);
+    let maxS = C.maxSpeed * (leading ? C.leaderHeaviness.maxSpeed : 1) * (p.drafting ? 1 + C.slipstream.boost : 1);
+    // Внутри поворота газ разгоняет только до лимита (сцепление); штраф — за ВХОД быстрее лимита
+    const inCornerNow = C.corners.enabled && this._zoneAt(p.t ?? 0) === 'red';
+    if (inCornerNow) maxS = Math.min(maxS, C.baseSpeed * C.corners.limitPace);
     const acc = C.accel * (leading ? C.leaderHeaviness.accel : 1);
-    const gas = this.gasDown || this.keys.UP.isDown || this.keys.W.isDown || this.keys.SPACE.isDown;
-    const drift = C.driftEnabled && (this.driftDown || this.keys.SHIFT.isDown);
     let driftTarget = 0;
-    if (drift) {
+    if (p.skidTimer > 0) {
+      // в заносе скоростью управляет занос (ниже), газ/тормоз/дрифт не действуют
+    } else if (drift) {
       // Мягкий (с газом): только теряем долю скорости. Резкий (без газа): плюс обычное торможение.
       p.speed -= p.speed * (gas ? C.driftSoftLoss : C.driftHardLoss) * dt;
       if (!gas) p.speed -= C.brake * dt;
@@ -220,7 +248,6 @@ export class GameScene extends Phaser.Scene {
     } else {
       p.speed = Math.max(0, p.speed - C.brake * dt);
     }
-    p.driftAngle += (driftTarget - p.driftAngle) * Math.min(1, C.driftAngleEase * dt);
     if (drift && p.speed > 20) this._skid(p);
     // Руль: клавиши или наклон
     let steer = 0;
@@ -232,7 +259,31 @@ export class GameScene extends Phaser.Scene {
       if (Math.abs(gv) > dz) steer = Phaser.Math.Clamp((gv - Math.sign(gv) * dz) / (mx - dz), -1, 1);
     }
     const laneLimit = this.level.trackWidthPx / 2 - 12;
-    p.lane = Phaser.Math.Clamp(p.lane + steer * C.steerSpeed * dt, -laneLimit, laneLimit);
+    let laneVel = steer * C.steerSpeed;
+
+    // Тугой поворот: выше лимита — занесло (теряешь скорость, выносит наружу, из потока)
+    if (inCornerNow && !p.wasInCorner && p.speed > C.baseSpeed * C.corners.limitPace + 4 && !(p.skidTimer > 0)) {
+      p.skidTimer = C.corners.skidSec; // влетел быстрее лимита — занос
+    }
+    p.wasInCorner = inCornerNow;
+    p.skidTimer = Math.max(0, (p.skidTimer || 0) - dt);
+    p.skidding = p.skidTimer > 0;
+    if (p.skidding) {
+      // Занос: газ не работает, скорость падает, выносит наружу (и из потока)
+      p.speed = Math.max(Math.min(p.speed, C.baseSpeed * C.corners.floorPace), p.speed - C.corners.scrubDecel * dt);
+      laneVel += -this._turnSign(p) * C.corners.pushOutPx;
+      driftTarget = Phaser.Math.DegToRad(C.driftSoftAngleDeg) * this._turnSign(p);
+      this._skid(p);
+    }
+    // Нервный лидер: пока ты первый, машину водит по полосе и слегка заносит
+    if (C.leaderWobble.enabled && leading) {
+      const w = C.leaderWobble, ph = this.raceTime * w.hz * Math.PI * 2;
+      laneVel += Math.cos(ph) * w.ampPx * w.hz * Math.PI * 2;
+      if (!drift && !p.skidding) driftTarget = Phaser.Math.DegToRad(w.angleDeg) * Math.sin(ph);
+    }
+    p.driftAngle += (driftTarget - p.driftAngle) * Math.min(1, C.driftAngleEase * dt);
+    p.lane = Phaser.Math.Clamp(p.lane + laneVel * dt, -laneLimit, laneLimit);
+    this.skidText.setVisible(p.skidding).setPosition(p.container.x, p.container.y + 34);
 
     // --- ИИ ---
     const view = this.cameras.main.worldView;
@@ -240,21 +291,35 @@ export class GameScene extends Phaser.Scene {
       if (car.isPlayer || car.finished) continue;
       const t = Phaser.Math.Clamp(car.dist / this.curveLen, 0, 1);
       let pace;
+      let ease = C.aiEase;
+      const cornerAhead = this._inCorner(car);
+      const offscreen = !view.contains(car.container.x, car.container.y);
       if (car.isChampion) {
-        pace = this._zoneAt(t) === 'red' ? C.championCornerPace : C.championStraightPace;
+        const cj = C.championJitter;
+        const inZone = this._zoneAt(t) === 'red';
+        pace = inZone ? C.championCornerPace : cornerAhead ? C.championBrakePace
+          : t > C.finishZoneFrom ? C.championFinishPace : C.championStraightPace;
+        if (cj.enabled) {
+          if (cornerAhead && !inZone) ease = cj.brakeEase; // резко бьёт по тормозам перед поворотом
+          else pace += cj.straightWobble * Math.sin((this.raceTime / cj.wobblePeriodSec) * Math.PI * 2);
+        }
+        // Не уезжать за экран: резинка только вне кадра
+        if (C.leaderGapCap.enabled && offscreen && car.dist > p.dist) pace *= C.leaderGapCap.slowPace;
       } else {
         pace = car.paceBase;
-        if (t > C.finishZoneFrom) pace = C.botFinishPace + (car.paceBase - C.botPace);
+        // Хвостист давит только СЗАДИ: обогнав игрока, едет обычным среднячком
+        if (car.isTailer && car.dist > p.dist) pace = C.botPace;
+        if (t > C.finishZoneFrom) pace = car.isTailer ? Math.max(pace, C.botFinishPace) : C.botFinishPace + (car.paceBase - C.botPace);
         // Rubber-band — только когда бота не видно в кадре
-        const offscreen = !view.contains(car.container.x, car.container.y);
         if (offscreen && leader.dist - car.dist > C.silverWindowPx) pace *= 1 + C.rubberBand;
       }
-      let ease = C.aiEase;
       if (car === leader) {
         pace *= C.leaderHeaviness.maxSpeed;
         ease *= C.leaderHeaviness.accel;
       }
       if (car.drafting) pace *= 1 + (car.isBot ? C.slipstream.botBoost : C.slipstream.boost);
+      // Поворот тугой для всех: ИИ заранее сбрасывает до лимита
+      if (C.corners.enabled && cornerAhead) pace = Math.min(pace, C.corners.limitPace);
       const target = C.baseSpeed * pace;
       car.speed += (target - car.speed) * Math.min(1, ease * dt);
       // Полоса: чемпион гуляет по синусу, боты ищут хвост и уходят вбок на обгон
@@ -264,6 +329,11 @@ export class GameScene extends Phaser.Scene {
 
     // --- Движение и отрисовка ---
     for (const car of this.cars) {
+      // Стоп-сигналы: горят при заметном замедлении (с небольшой задержкой гашения)
+      const decel = ((car.prevSpeed ?? car.speed) - car.speed) / dt;
+      car.prevSpeed = car.speed;
+      car.brakeHold = decel > C.brakeLightDecel && !car.finished ? 0.2 : Math.max(0, car.brakeHold - dt);
+      for (const bl of car.brakeLights) bl.setVisible(car.brakeHold > 0);
       if (!car.finished) {
         car.dist += car.speed * dt;
         if (car.dist >= this.curveLen) {
@@ -306,7 +376,8 @@ export class GameScene extends Phaser.Scene {
     const ss = C.slipstream;
     for (const car of this.cars) {
       car.drafting = null;
-      if (car.finished) continue;
+      if (!ss.enabled || car.finished) continue;
+      if (ss.driftExits && car.drifting) continue; // дрифт выводит из конуса
       let best = Infinity;
       for (const o of this.cars) {
         if (o === car || o.finished) continue;
@@ -327,6 +398,11 @@ export class GameScene extends Phaser.Scene {
   // Бот: рядом есть машина впереди — встаёт ей в хвост; догнал вплотную — уходит вбок на обгон
   _botLane(car) {
     const ss = C.slipstream;
+    // Хвостист: пока игрок впереди и близко — сидит ровно в его полосе (в потоке)
+    const p = this.player;
+    if (car.isTailer && p.dist > car.dist && p.dist - car.dist < ss.aiSeekPx) {
+      if (p.dist - car.dist > ss.aiPassGapPx) return p.lane;
+    }
     let ahead = null, best = Infinity;
     for (const o of this.cars) {
       const gap = o.dist - car.dist;
@@ -367,6 +443,12 @@ export class GameScene extends Phaser.Scene {
       tipX - cx * L - nx * W, tipY - cy * L - ny * W,
       tipX - cx * L + nx * W, tipY - cy * L + ny * W,
     );
+  }
+
+  // Машина в повороте или вот-вот в него войдёт (упреждение — чтобы ИИ тормозил заранее)
+  _inCorner(car) {
+    const t = Phaser.Math.Clamp(car.dist / this.curveLen, 0, 1);
+    return this._zoneAt(t) === 'red' || this._zoneAt(Math.min(1, t + C.corners.lookahead)) === 'red';
   }
 
   // Куда поворачивает трасса под машиной: +1 / -1 (на прямой — куда рулят)
