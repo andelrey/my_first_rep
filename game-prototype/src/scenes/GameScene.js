@@ -10,9 +10,19 @@ export class GameScene extends Phaser.Scene {
     this.level = level;
 
     // --- Сплайн трассы ---
-    const pts = level.spline.map(([x, y]) => new Phaser.Math.Vector2(x, y));
+    // Форма берётся из уровня, масштаб — под C.raceLengthSec на базовой скорости.
+    const rawPts = level.spline.map(([x, y]) => new Phaser.Math.Vector2(x, y));
+    const rawLen = new Phaser.Curves.Spline(rawPts).getLength();
+    const k = (C.raceLengthSec * C.baseSpeed) / rawLen;
+    const pts = rawPts.map((v) => v.scale(k));
     this.curve = new Phaser.Curves.Spline(pts);
     this.curveLen = this.curve.getLength();
+    const xs = pts.map((v) => v.x), ys = pts.map((v) => v.y);
+    const pad = level.trackWidthPx + 300;
+    this.worldBounds = {
+      x: Math.min(...xs) - pad, y: Math.min(...ys) - pad,
+      w: Math.max(...xs) - Math.min(...xs) + 2 * pad, h: Math.max(...ys) - Math.min(...ys) + 2 * pad,
+    };
 
     this._p = new Phaser.Math.Vector2();
     this._t = new Phaser.Math.Vector2();
@@ -25,8 +35,8 @@ export class GameScene extends Phaser.Scene {
     g.lineStyle(4, C.colors.light, 0.5);
     this.curve.draw(g, 96);
     // финишная черта
-    this.curve.getPoint(0.995, this._p);
-    this.curve.getTangent(0.995, this._t);
+    this.curve.getPoint(1, this._p);
+    this.curve.getTangent(1, this._t);
     const fa = Math.atan2(this._t.y, this._t.x);
     const finish = this.add.rectangle(this._p.x, this._p.y, 10, level.trackWidthPx, C.colors.dark);
     finish.setRotation(fa);
@@ -56,7 +66,8 @@ export class GameScene extends Phaser.Scene {
     for (const car of this.cars) car.speed = C.baseSpeed;
 
     // --- Камера ---
-    this.cameras.main.setBounds(-200, -200, 2400, 1600);
+    const wb = this.worldBounds;
+    this.cameras.main.setBounds(wb.x, wb.y, wb.w, wb.h);
     this.cameras.main.startFollow(this.player.container, true, 0.12, 0.12);
     this.cameras.main.setZoom(1.0);
     this.targetZoom = 1.0;
@@ -81,6 +92,8 @@ export class GameScene extends Phaser.Scene {
       { fontFamily: 'system-ui, sans-serif', fontSize: '15px', color: '#C7CBD1' }).setScrollFactor(0).setDepth(100);
 
     // Состояние
+    this.finishOrder = []; // машины в порядке пересечения финиша
+    this.raceTime = 0;
     this.wasEverFirst = false;
     this.state = 'racing';
   }
@@ -164,13 +177,11 @@ export class GameScene extends Phaser.Scene {
     if (this.state !== 'racing') return;
     const dt = Math.min(delta / 1000, 0.05);
 
-    // Ранги (по прогрессу)
-    const order = [...this.cars].sort((a, b) => b.dist - a.dist);
-    const playerRank = order.indexOf(this.player) + 1;
-    if (playerRank === 1) this.wasEverFirst = true;
+    // Ранги (по прогрессу) — до движения, для тяжести лидерства в этом кадре
+    const leader = this._ranking()[0];
 
     // --- Игрок ---
-    const leading = playerRank === 1;
+    const leading = leader === this.player;
     const maxS = C.maxSpeed * (leading ? C.leaderHeaviness.maxSpeed : 1);
     const acc = C.accel * (leading ? C.leaderHeaviness.accel : 1);
     const p = this.player;
@@ -194,18 +205,27 @@ export class GameScene extends Phaser.Scene {
     p.lane = Phaser.Math.Clamp(p.lane + steer * C.steerSpeed * dt, -laneLimit, laneLimit);
 
     // --- ИИ ---
+    const view = this.cameras.main.worldView;
     for (const car of this.cars) {
-      if (car.isPlayer) continue;
+      if (car.isPlayer || car.finished) continue;
       const t = Phaser.Math.Clamp(car.dist / this.curveLen, 0, 1);
       let pace;
       if (car.isChampion) {
-        pace = C.championPace * (this._zoneAt(t) === 'red' ? C.championCornerPenalty : 1);
+        pace = this._zoneAt(t) === 'red' ? C.championCornerPace : C.championStraightPace;
       } else {
         pace = car.paceBase;
         if (t > C.finishZoneFrom) pace *= C.finishBoost;
+        // Rubber-band — только когда бота не видно в кадре
+        const offscreen = !view.contains(car.container.x, car.container.y);
+        if (offscreen && leader.dist - car.dist > C.silverWindowPx) pace *= 1 + C.rubberBand;
+      }
+      let ease = C.aiEase;
+      if (car === leader) {
+        pace *= C.leaderHeaviness.maxSpeed;
+        ease *= C.leaderHeaviness.accel;
       }
       const target = C.baseSpeed * pace;
-      car.speed += (target - car.speed) * Math.min(1, C.aiEase * dt);
+      car.speed += (target - car.speed) * Math.min(1, ease * dt);
       // Плавно к своей полосе
       const pref = car.isChampion ? -20 : car.prefLane;
       car.lane += (pref - car.lane) * Math.min(1, 1.5 * dt);
@@ -213,9 +233,25 @@ export class GameScene extends Phaser.Scene {
 
     // --- Движение и отрисовка ---
     for (const car of this.cars) {
-      if (!car.finished) car.dist += car.speed * dt;
+      if (!car.finished) {
+        car.dist += car.speed * dt;
+        if (car.dist >= this.curveLen) {
+          // Время пересечения — с интерполяцией внутри кадра
+          const over = car.dist - this.curveLen;
+          car.finishTime = this.raceTime + dt - (car.speed > 0 ? over / car.speed : 0);
+          car.dist = this.curveLen;
+          car.finished = true;
+          this.finishOrder.push(car);
+        }
+      }
       this._placeCar(car);
     }
+    this.raceTime += dt;
+
+    // Ранги после движения — их видит HUD и по ним считается финиш
+    const order = this._ranking();
+    const playerRank = order.indexOf(this.player) + 1;
+    if (playerRank === 1) this.wasEverFirst = true;
 
     // --- HUD ---
     this._updateHud(order, playerRank);
@@ -226,7 +262,16 @@ export class GameScene extends Phaser.Scene {
     cam.setZoom(Phaser.Math.Linear(cam.zoom, this.targetZoom, Math.min(1, 2 * dt)));
 
     // --- Финиш ---
-    if (p.dist >= this.curveLen) this._finish(order, playerRank);
+    // Досрочно: двое соперников уже финишировали — второго места не будет
+    // (иначе, если встать, гонка не кончится никогда).
+    const rivalsDone = this.finishOrder.filter((c) => !c.isPlayer).length;
+    if (p.finished || rivalsDone >= 2) this._finish(order, playerRank);
+  }
+
+  // Финишировавшие — в порядке пересечения черты, остальные — по прогрессу
+  _ranking() {
+    const running = this.cars.filter((c) => !c.finished).sort((a, b) => b.dist - a.dist);
+    return [...this.finishOrder, ...running];
   }
 
   _updateHud(order, playerRank) {
@@ -264,7 +309,10 @@ export class GameScene extends Phaser.Scene {
     const p = this.player;
     const idx = order.indexOf(p);
     const ahead = order[idx - 1];
-    const gapAheadPx = ahead ? (ahead.dist - p.dist) : Infinity;
+    // Разрыв на финише: насколько впереди был соперник, когда игрок пересёк черту
+    const gapAheadPx = ahead && p.finished
+      ? (p.finishTime - ahead.finishTime) * p.speed
+      : Infinity;
 
     const place = playerRank;
     const stars = [
