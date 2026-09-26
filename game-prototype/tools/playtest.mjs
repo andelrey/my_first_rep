@@ -42,7 +42,7 @@ for (let r = 0; r < runs; r++) {
     await pg.evaluate(() => window.__g.scene.getScene('ResultScene').scene.start('GameScene'));
   }
   await pg.waitForTimeout(300);
-  let n = 0, lead = 0, drafted = 0, skids = 0, res = null; const gapsL = [], gaps3 = [];
+  let n = 0, lead = 0, drafted = 0, skids = 0, bumps = 0, hold = false, res = null; const gapsL = [], gaps3 = [];
   const t0 = Date.now();
   while (Date.now() - t0 < 90000) {
     const st = await pg.evaluate(() => {
@@ -56,15 +56,16 @@ for (let r = 0; r < runs; r++) {
         gl: o[0] === s.player ? 0 : (o[0].dist - s.player.dist) / 40,
         g3: o[2] && o[2] !== s.player ? (s.player.dist - o[2].dist) / 40 : 0,
         v: s.player.speed,
-        cornerSoon: s._zoneAt(Math.min(1, s.player.t + 0.03)) === 'red' || s._zoneAt(s.player.t) === 'red',
-        limit: 300 * 0.88,
+        brakeNow: s._brakeNow(s.player),
+        inCorner: s._zoneAt(s.player.t) === 'red',
+        bump: s.player.bumpT > 0.35,
         skid: !!s.player.skidding,
         draft: !!s.player.drafting,
         ah: a ? { gap: a.dist - s.player.dist, dl: a.lane - s.player.lane } : null,
       };
     });
     if (st.res) { res = st; break; }
-    n++; if (st.rank === 1) lead++; if (st.draft) drafted++; if (st.skid) skids++;
+    n++; if (st.rank === 1) lead++; if (st.draft) drafted++; if (st.skid) skids++; if (st.bump) bumps++;
     if (st.rank === 2) { gapsL.push(st.gl); gaps3.push(st.g3); }
 
     if (strat === 'gas') await kb.down('ArrowUp');
@@ -78,7 +79,10 @@ for (let r = 0; r < runs; r++) {
         dl = st.ah.gap > 40 ? st.ah.dl : (st.ah.dl > 0 ? st.ah.dl - 40 : st.ah.dl + 40);
         if (st.ah.gap < 22) drift = true;
       }
-      if (st.cornerSoon && st.v > st.limit - 4) gas = false;
+      // Контур мигает (точка торможения) — отпустить газ и не жать до самого поворота
+      if (st.brakeNow) hold = true;
+      if (st.inCorner) hold = false;
+      if (hold) gas = false;
       await steer(dl);
       if (gas) await kb.down('ArrowUp'); else await kb.up('ArrowUp');
       if (drift) await kb.down('Shift'); else await kb.up('Shift');
@@ -87,7 +91,7 @@ for (let r = 0; r < runs; r++) {
   }
   const pct = (x) => Math.round((100 * x) / Math.max(n, 1));
   const q = (a, f) => { const b = [...a].sort((x, y) => x - y); return b.length ? b[Math.floor(f * (b.length - 1))].toFixed(1) : '-'; };
-  console.log(`${strat} #${r + 1}: ${res ? `${res.time}s  ${res.res}` : 'НЕТ РЕЗУЛЬТАТА (таймаут)'}  | первым ${pct(lead)}% | в потоке ${pct(drafted)}% | в заносе ${pct(skids)}% | вторым: до лидера ${q(gapsL, .5)} корп., до 3-го ${q(gaps3, .5)} корп. (медианы)`);
+  console.log(`${strat} #${r + 1}: ${res ? `${res.time}s  ${res.res}` : 'НЕТ РЕЗУЛЬТАТА (таймаут)'}  | первым ${pct(lead)}% | в потоке ${pct(drafted)}% | в заносе ${pct(skids)}% | толчков ${bumps} | вторым: до лидера ${q(gapsL, .5)} корп., до 3-го ${q(gaps3, .5)} корп. (медианы)`);
 }
 if (errors.length) console.log('Ошибки на странице:', errors);
 await browser.close();
