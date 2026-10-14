@@ -7,7 +7,10 @@ export const viewport: Viewport = { width: "device-width", initialScale: 1 };
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ru">
-      <body className="bg-white text-neutral-900 antialiased">{children}</body>
+      <body className="bg-white text-neutral-900 antialiased">
+        <div className="bg-amber-100 px-4 py-1.5 text-center text-xs text-amber-900">Прототип для тестирования. Не для экстренной помощи.</div>
+        {children}
+      </body>
     </html>
   );
 }
