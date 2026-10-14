@@ -1,6 +1,7 @@
 "use server";
 // Вход по почте: Supabase присылает письмо со ссылкой и 6-значным кодом (шаблон — supabase/templates/magic_link.html).
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { supabaseServer } from "@/lib/supabase/server.ts";
 import { allowed, normEmail } from "@/lib/auth.ts";
 
@@ -12,13 +13,14 @@ export async function sendCode(_: LoginState, form: FormData): Promise<LoginStat
   try {
     if (!(await allowed(email)).ok) return { step: "email", email, error: "Этой почты нет в списке тестировщиков. Прототип закрытый." };
     const sb = await supabaseServer();
-    const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
+    // Стандартное письмо Supabase (без своего SMTP шаблон не поменять) ведёт сюда с ?code=… — см. app/auth/confirm.
+    const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: true, emailRedirectTo: `${await origin()}/auth/confirm` } });
     if (error) return { step: "email", email, error: authError(error.message) };
   } catch (e) {
     console.error("login: sendCode", (e as Error).message);
     return { step: "email", email, error: "Сервер входа не отвечает. Попробуйте через минуту." };
   }
-  return { step: "code", email, info: "Письмо отправлено. Откройте ссылку из письма или введите код из него." };
+  return { step: "code", email, info: "Письмо отправлено. Откройте ссылку из письма в этом же браузере. Если в письме есть код — можно ввести его здесь." };
 }
 
 export async function verifyCode(_: LoginState, form: FormData): Promise<LoginState> {
@@ -36,6 +38,12 @@ export async function logout() {
   const sb = await supabaseServer();
   await sb.auth.signOut();
   redirect("/login");
+}
+
+async function origin(): Promise<string> {
+  const h = await headers();
+  const host = h.get("x-forwarded-host") ?? h.get("host");
+  return `${h.get("x-forwarded-proto") ?? (host?.startsWith("localhost") ? "http" : "https")}://${host}`;
 }
 
 function authError(m: string): string {

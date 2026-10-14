@@ -3,7 +3,7 @@ import { LoginForm } from "./form.tsx";
 export const dynamic = "force-dynamic";
 
 const NOTICE: Record<string, string> = {
-  link: "Ссылка не сработала или устарела. Запросите новую.",
+  link: "Ссылка не сработала: устарела или открыта в другом браузере. Запросите новую здесь и откройте письмо в этом же браузере.",
 };
 
 export default async function Login({ searchParams }: { searchParams: Promise<{ e?: string }> }) {
