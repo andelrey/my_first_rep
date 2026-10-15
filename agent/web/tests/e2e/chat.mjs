@@ -6,6 +6,18 @@ resetUsers([["me@test.local", true]]);
 await clearMail();
 const b = await launch();
 const page = await login(b, "me@test.local");
+// Любая ошибка в браузере — провал. Ошибку рендера React ловит error.tsx, и pageerror её не видит:
+// поэтому отдельно смотрим, не появилась ли страница «Что-то пошло не так» (say ниже).
+const pageErrors = [];
+page.on("pageerror", (e) => pageErrors.push(e.message));
+const errorPage = page.locator("h1", { hasText: "Что-то пошло не так" });
+// Как в новых Chrome/Brave: scrollIntoView возвращает Promise. Иначе на старом Chromium Playwright
+// не поймать «destroy is not a function» (эффект с неявным return).
+await page.addInitScript(() => {
+  const orig = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function (...a) { orig.apply(this, a); return Promise.resolve(); };
+});
+await page.reload();
 const uid = sql("select id from auth.users where email='me@test.local'");
 const assistants = page.locator(".bg-neutral-100");
 
@@ -14,7 +26,12 @@ async function say(text) {
   await page.fill("textarea", text);
   await page.click("text=Отправить");
   const typing = await page.getByText("Тренер печатает…").isVisible().catch(() => false);
-  await page.waitForFunction((n) => document.querySelectorAll(".bg-neutral-100").length > n || document.querySelector("[data-chat-error]"), before, { timeout: 150000 });
+  await page.waitForFunction(
+    (n) => document.querySelectorAll(".bg-neutral-100").length > n || document.querySelector("[data-chat-error]") || [...document.querySelectorAll("h1")].some((h) => h.textContent.includes("Что-то пошло не так")),
+    before, { timeout: 150000 });
+  await page.waitForTimeout(300); // эффекты после ответа (прокрутка) успевают отработать
+  const shown = (await errorPage.count()) ? await page.locator("main p").last().textContent() : ""; // «Ошибка: …»
+  check(`после «${text.slice(0, 20)}…» нет страницы ошибки`, !shown, shown);
   return typing;
 }
 
@@ -65,5 +82,6 @@ await page.waitForURL(APP + "/");
 check("подтверждение одним диалогом", dialog.includes("Отменить будет нельзя"));
 const left = ["messages", "conversations", "memory", "usage", "review_sample"].map((t) => `${t}=${sql(`select count(*) from ${t} where user_id='${uid}'`)}`);
 check("в базе пусто", left.every((x) => x.endsWith("=0")), left.join(" "));
+check("в браузере не было ошибок", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
 await b.close();
 done();

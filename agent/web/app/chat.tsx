@@ -23,7 +23,11 @@ export function Chat({ initial }: { initial: UiMessage[] }) {
   const bottom = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => bottom.current?.scrollIntoView({ block: "end" }), [list, busy, error]);
+  // Фигурные скобки обязательны: в новых Chromium scrollIntoView возвращает Promise, а React принял бы его
+  // за функцию очистки и упал на следующем рендере («destroy is not a function»).
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ block: "end" });
+  }, [list, busy, error]);
 
   async function send() {
     const t = text.trim();
