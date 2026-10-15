@@ -37,7 +37,8 @@ export function Chat({ initial }: { initial: UiMessage[] }) {
     try {
       const r = await fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: t }), signal: ctl.signal });
       const j = await r.json().catch(() => ({ error: "Сервер ответил непонятно. Попробуйте ещё раз." }));
-      if (!r.ok || j.error) throw new Error(j.error ?? "Что-то пошло не так. Попробуйте ещё раз.");
+      if (r.status === 401) throw new Error("Сессия закончилась. Обновите страницу и войдите заново.");
+      if (!r.ok || j.error || !Array.isArray(j.messages)) throw new Error(j.error ?? "Что-то пошло не так. Попробуйте ещё раз.");
       setList((l) => [...l, ...j.messages]);
     } catch (e) {
       setError((e as Error).name === "AbortError" ? "Ответ не пришёл вовремя. Попробуйте отправить ещё раз." : (e as Error).message);
