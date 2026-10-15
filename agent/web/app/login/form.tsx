@@ -1,8 +1,18 @@
 "use client";
-import { useActionState } from "react";
+import { useActionState, useEffect, useState } from "react";
 import { sendCode, verifyCode, type LoginState } from "./actions.ts";
 
-export function LoginForm({ notice }: { notice?: string }) {
+// Supabase возвращает причину отказа в #error_code=… (до сервера эта часть адреса не доходит).
+const HASH_ERRORS: Record<string, string> = {
+  otp_expired: "Ссылка уже использована или устарела. Каждая новая ссылка отменяет прежние — откройте самое последнее письмо.",
+};
+
+export function LoginForm({ notice: serverNotice }: { notice?: string }) {
+  const [notice, setNotice] = useState(serverNotice);
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.hash.slice(1)).get("error_code");
+    if (code && HASH_ERRORS[code]) setNotice(HASH_ERRORS[code]);
+  }, []);
   const [emailState, sendAction, sending] = useActionState(sendCode, { step: "email", email: "" } as LoginState);
   const [codeState, verifyAction, verifying] = useActionState(verifyCode, { step: "code", email: "" } as LoginState);
 
