@@ -4,3 +4,5 @@ node_modules/
 !.env.example
 next-env.d.ts
 *.tsbuildinfo
+.fake-mode
+!.env.e2e.example

@@ -7,7 +7,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "e2e": "npm run e2e:rls && npm run e2e:login && npm run e2e:open && npm run e2e:chat",
+    "e2e:rls": "node --env-file=.env.e2e tests/e2e/rls.mjs",
+    "e2e:login": "node --env-file=.env.e2e tests/e2e/login.mjs",
+    "e2e:open": "node --env-file=.env.e2e tests/e2e/open-signup.mjs",
+    "e2e:chat": "node --env-file=.env.e2e tests/e2e/chat.mjs",
+    "e2e:errors": "node --env-file=.env.e2e tests/e2e/errors.mjs",
+    "e2e:crisis": "node --env-file=.env.e2e tests/e2e/crisis.mjs",
+    "start:e2e": "node --env-file=.env.e2e node_modules/next/dist/bin/next start"
   },
   "dependencies": {
     "@supabase/ssr": "0.12.7",
@@ -21,6 +29,7 @@
     "@types/node": "26.6.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "playwright": "1.64.1",
     "tailwindcss": "4.3.3",
     "typescript": "7.0.2"
   }
