@@ -8,10 +8,12 @@ export type Viewer = { id: string; email: string; isAdmin: boolean };
 
 export const normEmail = (e: string) => e.trim().toLowerCase();
 
+// Строка «*» в allowlist — пускать всех (миграция 20261015000000_open_signup.sql). Админ — только по своей строке.
 export async function allowed(email: string): Promise<{ ok: boolean; isAdmin: boolean }> {
-  const { data, error } = await supabaseAdmin().from("allowlist").select("is_admin").eq("email", normEmail(email)).maybeSingle();
+  const e = normEmail(email);
+  const { data, error } = await supabaseAdmin().from("allowlist").select("email, is_admin").in("email", [e, "*"]);
   if (error) throw new Error(`Не удалось проверить белый список: ${error.message}`);
-  return { ok: !!data, isAdmin: !!data?.is_admin };
+  return { ok: !!data?.length, isAdmin: !!data?.find((r) => r.email === e)?.is_admin };
 }
 
 export async function getViewer(): Promise<Viewer | null> {
